@@ -1,0 +1,448 @@
+From 6e752846f649e21bf1903d9a6e55feb2afc6bd6e Mon Sep 17 00:00:00 2001
+From: Oliver Hartkopp <socketcan@hartkopp.net>
+Date: Mon, 23 Nov 2026 09:04:36 +0000
+Subject: [PATCH] iplink: add support for canxl_eth (Ethernet over CAN XL)
+
+The canxl_eth netdevice is an Ethernet interface on top of a CAN XL
+interface. The Ethernet frames are transported in CAN XL frames with the
+CiA 611-1 service data unit type (SDT) 04h or 05h.
+
+Add support for the canxl_eth specific netlink attributes:
+
+  ip link add link can0 name xleth0 type canxl_eth sdt 5 \
+          tx_prio 0x123 rx_prio 0x100 rx_prio_mask 0x700 \
+          [ tx_vcid VCID ] [ rx_vcid VCID ] [ rx_vcid_mask VCID_MASK ] \
+          [ echo { on | off } ] [ sec { on | off } ] [ rrs { on | off } ]
+
+The settings sdt, tx_prio, rx_prio and rx_prio_mask are mandatory when
+creating the device. All settings can only be changed while the device
+is down.
+
+The echo, sec and rrs settings are combined into the u8 netlink attribute
+IFLA_CANXL_ETH_FLAGS which always replaces all flags. When one of them is
+given the unspecified flags get their default (echo on, sec off, rrs off).
+
+Add the uapi header linux/can/xl_eth.h for the canxl_eth netlink
+attributes.
+
+Signed-off-by: Oliver Hartkopp <socketcan@hartkopp.net>
+---
+ include/uapi/linux/can/xl_eth.h |  69 +++++++++++
+ ip/Makefile                     |   1 +
+ ip/iplink_canxl_eth.c           | 196 ++++++++++++++++++++++++++++++++
+ man/man8/ip-link.8.in           |  94 +++++++++++++++
+ 4 files changed, 360 insertions(+)
+ create mode 100644 include/uapi/linux/can/xl_eth.h
+ create mode 100644 ip/iplink_canxl_eth.c
+
+diff --git a/include/uapi/linux/can/xl_eth.h b/include/uapi/linux/can/xl_eth.h
+new file mode 100644
+index 0000000..4e6467d
+--- /dev/null
++++ b/include/uapi/linux/can/xl_eth.h
+@@ -0,0 +1,69 @@
++/* SPDX-License-Identifier: ((GPL-2.0-only WITH Linux-syscall-note) OR BSD-3-Clause) */
++/*
++ * linux/can/xl_eth.h
++ *
++ * Definitions for the CAN XL Ethernet netdevice (canxl_eth) which tunnels
++ * IEEE 802.3 MAC frames in CAN XL frames as specified in CiA 611-1
++ * (CAN XL higher-layer functions - Part 1: Service data unit types).
++ */
++
++#ifndef _UAPI_CAN_XL_ETH_H
++#define _UAPI_CAN_XL_ETH_H
++
++#include <linux/can.h>
++
++/* CAN CiA 611-1 Service Data Unit Types for IEEE 802.3 MAC frames */
++#define CAN_CIA_ETH_SDT		0x04	/* IEEE 802.3 (MAC frame) */
++#define CAN_CIA_ETH_EXT_SDT	0x05	/* IEEE 802.3 (MAC frame) extended */
++
++/* content of the CAN XL acceptance field (AF) for SDT 04h */
++#define CANXL_ETH_SDT04_AF_PAD	0xCCCCCCCC /* prevent bit-stuffing */
++
++/* flags for IFLA_CANXL_ETH_FLAGS (u8) */
++#define CANXL_ETH_FLAG_SEC	CANXL_SEC /* set/check SEC in CAN XL frames */
++#define CANXL_ETH_FLAG_RRS	CANXL_RRS /* set/check RRS in CAN XL frames */
++#define CANXL_ETH_FLAG_ECHO	0x80	  /* local echo of sent frames */
++
++/*
++ * canxl_eth specific netlink attributes (IFLA_INFO_DATA)
++ *
++ * Like the addressing of a CAN_ISOTP socket at bind() time the attributes
++ * SDT, TX_PRIO, RX_PRIO and RX_PRIO_MASK are mandatory when creating the
++ * canxl_eth device. The VCID attributes (default 0 => no VCID) and FLAGS
++ * (default CANXL_ETH_FLAG_ECHO) are optional. All values can only be
++ * changed while the canxl_eth device is down. FLAGS always replaces all
++ * flags.
++ *
++ * The CAN XL frames are created with CANXL_XLF and the SEC/RRS values from
++ * CANXL_ETH_FLAG_SEC/CANXL_ETH_FLAG_RRS. The value 0x80 (CANXL_XLF in the
++ * CAN XL frame) is used for CANXL_ETH_FLAG_ECHO as CANXL_XLF is always set.
++ *
++ * TX path:
++ *   SDT 04h: AF = CANXL_ETH_SDT04_AF_PAD, VCID = IFLA_CANXL_ETH_TX_VCID
++ *   SDT 05h: AF = 1st/4th/5th/6th octet of the destination MAC address,
++ *            VCID = lower 8 bit of the VID of the first VLAN tag (or 0)
++ *
++ * RX path:
++ *   CAN XL frames with SDT 04h and SDT 05h are accepted when
++ *   (prio & rx_prio_mask) == (rx_prio & rx_prio_mask) and
++ *   (vcid & rx_vcid_mask) == (rx_vcid & rx_vcid_mask).
++ *   With rx_vcid_mask = 0 (default) all VCIDs are accepted.
++ *   The SEC/RRS values of the CAN XL frame have to match the
++ *   CANXL_ETH_FLAG_SEC/CANXL_ETH_FLAG_RRS settings.
++ */
++enum {
++	IFLA_CANXL_ETH_UNSPEC,
++	IFLA_CANXL_ETH_SDT,		/* u8: CAN_CIA_ETH_SDT or _ETH_EXT_SDT */
++	IFLA_CANXL_ETH_TX_PRIO,		/* u16: 11 bit priority ID (tx) */
++	IFLA_CANXL_ETH_RX_PRIO,		/* u16: 11 bit priority ID (rx filter) */
++	IFLA_CANXL_ETH_RX_PRIO_MASK,	/* u16: 11 bit priority ID mask (rx) */
++	IFLA_CANXL_ETH_TX_VCID,		/* u8: VCID (tx, only for SDT 04h) */
++	IFLA_CANXL_ETH_RX_VCID,		/* u8: VCID (rx filter) */
++	IFLA_CANXL_ETH_RX_VCID_MASK,	/* u8: VCID mask (rx filter) */
++	IFLA_CANXL_ETH_FLAGS,		/* u8: CANXL_ETH_FLAG_* */
++
++	__IFLA_CANXL_ETH_MAX
++#define IFLA_CANXL_ETH_MAX	(__IFLA_CANXL_ETH_MAX - 1)
++};
++
++#endif /* !_UAPI_CAN_XL_ETH_H */
+diff --git a/ip/Makefile b/ip/Makefile
+index 978f684..49577f3 100644
+--- a/ip/Makefile
++++ b/ip/Makefile
+@@ -4,6 +4,7 @@ IPOBJ=ip.o ipaddress.o ipaddrlabel.o iproute.o iprule.o ipnetns.o \
+     ipmaddr.o ipmonitor.o ipmroute.o ipprefix.o iptuntap.o iptoken.o \
+     ipxfrm.o xfrm_state.o xfrm_policy.o xfrm_monitor.o iplink_dummy.o \
+     iplink_ifb.o iplink_nlmon.o iplink_team.o iplink_vcan.o iplink_vxcan.o \
++    iplink_canxl_eth.o \
+     iplink_vlan.o link_veth.o link_gre.o iplink_can.o iplink_xdp.o \
+     iplink_macvlan.o ipl2tp.o link_vti.o link_vti6.o link_xfrm.o \
+     iplink_vxlan.o tcp_metrics.o iplink_ipoib.o ipnetconf.o link_ip6tnl.o \
+diff --git a/ip/iplink_canxl_eth.c b/ip/iplink_canxl_eth.c
+new file mode 100644
+index 0000000..83972ab
+--- /dev/null
++++ b/ip/iplink_canxl_eth.c
+@@ -0,0 +1,196 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * iplink_canxl_eth.c	canxl_eth device support (Ethernet over CAN XL)
++ *
++ * Author:	Oliver Hartkopp <socketcan@hartkopp.net>
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <linux/can.h>
++#include <linux/can/xl_eth.h>
++
++#include "utils.h"
++#include "ip_common.h"
++
++static void print_usage(FILE *f)
++{
++	fprintf(f,
++		"Usage: ip link add link DEVICE name NAME type canxl_eth\n"
++		"\tsdt { 4 | 5 } tx_prio PRIO rx_prio PRIO rx_prio_mask PRIO_MASK\n"
++		"\t[ tx_vcid VCID ] [ rx_vcid VCID ] [ rx_vcid_mask VCID_MASK ]\n"
++		"\t[ echo { on | off } ] [ sec { on | off } ] [ rrs { on | off } ]\n"
++		"\n"
++		"\tip link set NAME type canxl_eth [ OPTIONS ]\n"
++		"\n"
++		"Where:	PRIO, PRIO_MASK := 0x000..0x7FF (11 bit priority ID)\n"
++		"	VCID, VCID_MASK := 0x00..0xFF\n"
++		"\n"
++		"Note:	sdt, tx_prio, rx_prio and rx_prio_mask are mandatory when\n"
++		"	creating the device. The settings can only be changed while\n"
++		"	the device is down. When one of echo, sec or rrs is given\n"
++		"	all flags are set (defaults: echo on, sec off, rrs off).\n");
++}
++
++static void usage(void)
++{
++	print_usage(stderr);
++}
++
++static void canxl_eth_get_prio(__u16 *val, const char *arg)
++{
++	if (get_u16(val, arg, 0) || *val > CANXL_PRIO_MASK)
++		invarg("invalid 11 bit priority ID value", arg);
++}
++
++static void canxl_eth_set_flag(__u8 *flags, __u8 flag, bool on)
++{
++	if (on)
++		*flags |= flag;
++	else
++		*flags &= ~flag;
++}
++
++static int canxl_eth_parse_opt(struct link_util *lu, int argc, char **argv,
++			       struct nlmsghdr *n)
++{
++	__u8 flags = CANXL_ETH_FLAG_ECHO; /* default */
++	bool set_flags = false;
++	__u16 prio;
++	__u8 val;
++	int ret;
++
++	while (argc > 0) {
++		if (strcmp(*argv, "sdt") == 0) {
++			NEXT_ARG();
++			if (get_u8(&val, *argv, 0) ||
++			    (val != CAN_CIA_ETH_SDT && val != CAN_CIA_ETH_EXT_SDT))
++				invarg("sdt must be 4 or 5", *argv);
++			addattr8(n, 1024, IFLA_CANXL_ETH_SDT, val);
++		} else if (strcmp(*argv, "tx_prio") == 0) {
++			NEXT_ARG();
++			canxl_eth_get_prio(&prio, *argv);
++			addattr16(n, 1024, IFLA_CANXL_ETH_TX_PRIO, prio);
++		} else if (strcmp(*argv, "rx_prio") == 0) {
++			NEXT_ARG();
++			canxl_eth_get_prio(&prio, *argv);
++			addattr16(n, 1024, IFLA_CANXL_ETH_RX_PRIO, prio);
++		} else if (strcmp(*argv, "rx_prio_mask") == 0) {
++			NEXT_ARG();
++			canxl_eth_get_prio(&prio, *argv);
++			addattr16(n, 1024, IFLA_CANXL_ETH_RX_PRIO_MASK, prio);
++		} else if (strcmp(*argv, "tx_vcid") == 0) {
++			NEXT_ARG();
++			if (get_u8(&val, *argv, 0))
++				invarg("invalid tx_vcid value", *argv);
++			addattr8(n, 1024, IFLA_CANXL_ETH_TX_VCID, val);
++		} else if (strcmp(*argv, "rx_vcid") == 0) {
++			NEXT_ARG();
++			if (get_u8(&val, *argv, 0))
++				invarg("invalid rx_vcid value", *argv);
++			addattr8(n, 1024, IFLA_CANXL_ETH_RX_VCID, val);
++		} else if (strcmp(*argv, "rx_vcid_mask") == 0) {
++			NEXT_ARG();
++			if (get_u8(&val, *argv, 0))
++				invarg("invalid rx_vcid_mask value", *argv);
++			addattr8(n, 1024, IFLA_CANXL_ETH_RX_VCID_MASK, val);
++		} else if (strcmp(*argv, "echo") == 0) {
++			NEXT_ARG();
++			canxl_eth_set_flag(&flags, CANXL_ETH_FLAG_ECHO,
++					   parse_on_off("echo", *argv, &ret));
++			if (ret)
++				return ret;
++			set_flags = true;
++		} else if (strcmp(*argv, "sec") == 0) {
++			NEXT_ARG();
++			canxl_eth_set_flag(&flags, CANXL_ETH_FLAG_SEC,
++					   parse_on_off("sec", *argv, &ret));
++			if (ret)
++				return ret;
++			set_flags = true;
++		} else if (strcmp(*argv, "rrs") == 0) {
++			NEXT_ARG();
++			canxl_eth_set_flag(&flags, CANXL_ETH_FLAG_RRS,
++					   parse_on_off("rrs", *argv, &ret));
++			if (ret)
++				return ret;
++			set_flags = true;
++		} else if (strcmp(*argv, "help") == 0) {
++			usage();
++			return -1;
++		} else {
++			fprintf(stderr, "canxl_eth: unknown option \"%s\"?\n",
++				*argv);
++			usage();
++			return -1;
++		}
++		argc--, argv++;
++	}
++
++	/* the flags attribute always replaces all flags */
++	if (set_flags)
++		addattr8(n, 1024, IFLA_CANXL_ETH_FLAGS, flags);
++
++	return 0;
++}
++
++static void canxl_eth_print_opt(struct link_util *lu, FILE *f,
++				struct rtattr *tb[])
++{
++	if (!tb)
++		return;
++
++	if (tb[IFLA_CANXL_ETH_SDT])
++		print_uint(PRINT_ANY, "sdt", "sdt %u ",
++			   rta_getattr_u8(tb[IFLA_CANXL_ETH_SDT]));
++
++	if (tb[IFLA_CANXL_ETH_TX_PRIO])
++		print_0xhex(PRINT_ANY, "tx_prio", "tx_prio 0x%03llx ",
++			    rta_getattr_u16(tb[IFLA_CANXL_ETH_TX_PRIO]));
++
++	if (tb[IFLA_CANXL_ETH_RX_PRIO])
++		print_0xhex(PRINT_ANY, "rx_prio", "rx_prio 0x%03llx ",
++			    rta_getattr_u16(tb[IFLA_CANXL_ETH_RX_PRIO]));
++
++	if (tb[IFLA_CANXL_ETH_RX_PRIO_MASK])
++		print_0xhex(PRINT_ANY, "rx_prio_mask", "rx_prio_mask 0x%03llx ",
++			    rta_getattr_u16(tb[IFLA_CANXL_ETH_RX_PRIO_MASK]));
++
++	if (tb[IFLA_CANXL_ETH_TX_VCID])
++		print_0xhex(PRINT_ANY, "tx_vcid", "tx_vcid 0x%02llx ",
++			    rta_getattr_u8(tb[IFLA_CANXL_ETH_TX_VCID]));
++
++	if (tb[IFLA_CANXL_ETH_RX_VCID])
++		print_0xhex(PRINT_ANY, "rx_vcid", "rx_vcid 0x%02llx ",
++			    rta_getattr_u8(tb[IFLA_CANXL_ETH_RX_VCID]));
++
++	if (tb[IFLA_CANXL_ETH_RX_VCID_MASK])
++		print_0xhex(PRINT_ANY, "rx_vcid_mask", "rx_vcid_mask 0x%02llx ",
++			    rta_getattr_u8(tb[IFLA_CANXL_ETH_RX_VCID_MASK]));
++
++	if (tb[IFLA_CANXL_ETH_FLAGS]) {
++		__u8 flags = rta_getattr_u8(tb[IFLA_CANXL_ETH_FLAGS]);
++
++		print_on_off(PRINT_ANY, "echo", "echo %s ",
++			     flags & CANXL_ETH_FLAG_ECHO);
++		print_on_off(PRINT_ANY, "sec", "sec %s ",
++			     flags & CANXL_ETH_FLAG_SEC);
++		print_on_off(PRINT_ANY, "rrs", "rrs %s ",
++			     flags & CANXL_ETH_FLAG_RRS);
++	}
++}
++
++static void canxl_eth_print_help(struct link_util *lu, int argc, char **argv,
++				 FILE *f)
++{
++	print_usage(f);
++}
++
++struct link_util canxl_eth_link_util = {
++	.id		= "canxl_eth",
++	.maxattr	= IFLA_CANXL_ETH_MAX,
++	.parse_opt	= canxl_eth_parse_opt,
++	.print_opt	= canxl_eth_print_opt,
++	.print_help	= canxl_eth_print_help,
++};
+diff --git a/man/man8/ip-link.8.in b/man/man8/ip-link.8.in
+index 719781b..cb9373f 100644
+--- a/man/man8/ip-link.8.in
++++ b/man/man8/ip-link.8.in
+@@ -263,6 +263,7 @@ ip-link \- network device configuration
+ .BR bond " | "
+ .BR bridge " | "
+ .BR can " | "
++.BR canxl_eth " | "
+ .BR dsa " | "
+ .BR dummy " | "
+ .BR erspan " |"
+@@ -359,6 +360,9 @@ Link types:
+ .B can
+ - Controller Area Network
+ .sp
++.B canxl_eth
++- Ethernet over CAN XL interface
++.sp
+ .B dsa
+ - Distributed Switch Architecture
+ .sp
+@@ -899,6 +903,96 @@ keyword.
+ 
+ .in -8
+ 
++.TP
++CANXL_ETH Type Support
++For a link of type
++.I CANXL_ETH
++the following additional arguments are supported:
++
++.BI "ip link add link " DEVICE " name " NAME
++.BR type " canxl_eth"
++.BR sdt " { " 4 " | " 5 " }"
++.BI tx_prio " PRIO"
++.BI rx_prio " PRIO"
++.BI rx_prio_mask " PRIO_MASK"
++[
++.BI tx_vcid " VCID"
++] [
++.BI rx_vcid " VCID"
++] [
++.BI rx_vcid_mask " VCID_MASK"
++] [
++.BR echo " { " on " | " off " }"
++] [
++.BR sec " { " on " | " off " }"
++] [
++.BR rrs " { " on " | " off " }"
++]
++
++.in +8
++The
++.I CANXL_ETH
++interface is an Ethernet interface on top of the CAN XL interface
++.IR DEVICE .
++The Ethernet frames are transported in CAN XL frames with the CiA 611-1
++service data unit type (SDT) 04h or 05h. The settings
++.BR sdt ", " tx_prio ", " rx_prio " and " rx_prio_mask
++are mandatory when creating the interface. All settings can only be changed
++while the interface is down. When one of
++.BR echo ", " sec " or " rrs
++is given, all three flags are set (unspecified flags get their default).
++
++.sp
++.BR sdt " { " 4 " | " 5 " }"
++- the SDT of the sent CAN XL frames. SDT 04h: the acceptance field (AF) is
++0xCCCCCCCC and the VCID is
++.BR tx_vcid .
++SDT 05h: the AF contains the 1st, 4th, 5th and 6th octet of the destination
++MAC address and the VCID contains the lower 8 bit of the VID of a VLAN tag
++(or 0). CAN XL frames with SDT 04h and 05h are received.
++
++.sp
++.BI tx_prio " PRIO"
++- the 11 bit CAN XL priority ID (0x000..0x7FF) of the sent CAN XL frames.
++The priority ID has to be unique for each sender on the CAN bus.
++
++.sp
++.BI rx_prio " PRIO"
++.BI rx_prio_mask " PRIO_MASK"
++- receive filter for the 11 bit CAN XL priority ID of the received CAN XL
++frames.
++
++.sp
++.BI tx_vcid " VCID"
++- the VCID (0x00..0xFF) of the sent CAN XL frames with SDT 04h. Default: 0
++(no VCID).
++
++.sp
++.BI rx_vcid " VCID"
++.BI rx_vcid_mask " VCID_MASK"
++- receive filter for the VCID of the received CAN XL frames. Default: 0/0
++(all VCIDs are received).
++
++.sp
++.BR echo " { " on " | " off " }"
++- enables or disables the local echo of the sent CAN XL frames to other
++PF_CAN users on this host, e.g. to monitor the Ethernet traffic with
++candump. Default: on.
++
++.sp
++.BR sec " { " on " | " off " }"
++- sets the SEC (simple extended content) flag in the sent CAN XL frames.
++Only received CAN XL frames with the same SEC value are accepted.
++Default: off.
++
++.sp
++.BR rrs " { " on " | " off " }"
++- sets the RRS (remote request substitution) flag in the sent CAN XL frames.
++Only received CAN XL frames with the same RRS value are accepted.
++Default: off.
++
++.in -8
++
+ .TP
+ VETH, VXCAN Type Support
+ For a link of types
+-- 
+2.43.0
+

@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Kbuild file for the out-of-tree build of the canxl_eth module
+#
+
+obj-m := canxl_eth.o
+canxl_eth-y := xl_eth.o
+ccflags-y := -I$(src)/include/uapi
+
+#
+# Detect the kernel API features in the headers of the target kernel.
+# A check of LINUX_VERSION_CODE is not sufficient as stable kernels (e.g.
+# the Debian kernels) may contain backports of newer kernel API features.
+#
+# canxl_eth_have(<header>,<pattern>,<define>)
+canxl_eth_have = $(if $(shell grep -s -q -e '$(2)' $(srctree)/$(1) && echo y),-D$(3))
+
+# dev_dstats_*() helpers (Linux 6.14)
+ccflags-y += $(call canxl_eth_have,include/linux/netdevice.h,static inline void dev_dstats_tx_add,CANXL_ETH_HAVE_DSTATS_HELPERS)
+# newlink() with struct rtnl_newlink_params (Linux 6.15)
+ccflags-y += $(call canxl_eth_have,include/net/rtnetlink.h,struct rtnl_newlink_params \*params,CANXL_ETH_HAVE_NEWLINK_PARAMS)
+# CAN device capabilities (Linux 6.19)
+ccflags-y += $(call canxl_eth_have,include/linux/can/can-ml.h,can_cap_enabled,CANXL_ETH_HAVE_CAN_CAP)
+# CAN skb extension SKB_EXT_CAN (Linux 7.0)
+ccflags-y += $(call canxl_eth_have,include/linux/can/skb.h,can_skb_ext_add,CANXL_ETH_HAVE_CAN_SKB_EXT)
+# can_rx_register() with socket inode (Linux 7.4)
+ccflags-y += $(call canxl_eth_have,include/linux/can/core.h,u64 ino,CANXL_ETH_HAVE_RX_REGISTER_INO)
