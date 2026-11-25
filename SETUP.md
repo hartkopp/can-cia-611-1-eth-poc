@@ -247,6 +247,40 @@ The Ethernet frame (without FCS) is the content of the CAN XL data field
 ip link set xleth0 mtu 2000
 ```
 
+## Bandwidth and backpressure
+
+The Ethernet traffic shares the bandwidth of the CAN XL bus with the other
+CAN traffic. The `canxl_eth` device hands the frames over to the CAN XL
+interface immediately. When the transmit queue of the CAN XL interface is full
+(default `txqueuelen` 10 for CAN interfaces) the frames are dropped. The drop
+is reported to the sender, e.g. TCP reduces its congestion window.
+
+To avoid drops and to reserve bandwidth for the other CAN traffic, the
+Ethernet bandwidth can be limited with a shaping qdisc on the `canxl_eth`
+device, e.g. with a token bucket filter:
+
+```
+tc qdisc add dev xleth0 root tbf rate 4mbit burst 8k latency 50ms
+```
+
+The frames wait in the qdisc of `xleth0` while they are still owned by their
+original socket, so that e.g. TCP Small Queues (TSQ) limit the sender. The
+rate has to be below the bandwidth which is available for the Ethernet traffic
+on the CAN XL bus: Each CAN XL frame has an arbitration phase with the nominal
+bit rate, the CAN XL frame header, CRCs and stuff bits in addition to the
+Ethernet frame. The values above are an example for a CAN XL data bit rate of
+8 Mbit/s and have to be adapted to the CAN XL network.
+
+Show the qdisc statistics and remove the qdisc:
+
+```
+tc -s qdisc show dev xleth0
+tc qdisc del dev xleth0 root
+```
+
+Note: With the virtual CAN interfaces `vcan` and `vxcan` (e.g. in
+`canxl_eth_vxcan_test.sh`) the frames are not limited by a bit rate.
+
 ## Change settings
 
 The settings can only be changed while the `canxl_eth` device is down:

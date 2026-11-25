@@ -288,16 +288,17 @@ static netdev_tx_t canxl_eth_start_xmit(struct sk_buff *skb,
 
 	/* can_send() consumes the skb in any case */
 	if (can_send(skb, !!(priv->cfg.flags & CANXL_ETH_FLAG_ECHO)))
-		dev_dstats_tx_dropped(dev);
-	else
-		dev_dstats_tx_add(dev, len);
+		goto dropped;
 
+	dev_dstats_tx_add(dev, len);
 	return NETDEV_TX_OK;
 
 drop:
-	dev_dstats_tx_dropped(dev);
 	kfree_skb(skb);
-	return NETDEV_TX_OK;
+dropped:
+	dev_dstats_tx_dropped(dev);
+	/* report the dropped frame to the sender (e.g. TCP) like VLAN */
+	return NET_XMIT_DROP;
 }
 
 /* PF_CAN receive callback for the frames matching the canxl_eth filter */

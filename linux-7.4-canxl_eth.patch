@@ -1,4 +1,4 @@
-From 451db6f0376eb30d1e4e7a375bb7122188e96680 Mon Sep 17 00:00:00 2001
+From 6dd4ee10e8ee632f92ace4753881511449bda967 Mon Sep 17 00:00:00 2001
 From: Oliver Hartkopp <socketcan@hartkopp.net>
 Date: Sun, 8 Nov 2026 13:39:21 +0000
 Subject: [PATCH] can: add canxl_eth Ethernet over CAN XL netdevice
@@ -62,8 +62,8 @@ Signed-off-by: Oliver Hartkopp <socketcan@hartkopp.net>
  include/uapi/linux/can/xl_eth.h |  69 ++++
  net/can/Kconfig                 |  19 +
  net/can/Makefile                |   3 +
- net/can/xl_eth.c                | 679 ++++++++++++++++++++++++++++++++
- 4 files changed, 770 insertions(+)
+ net/can/xl_eth.c                | 680 ++++++++++++++++++++++++++++++++
+ 4 files changed, 771 insertions(+)
  create mode 100644 include/uapi/linux/can/xl_eth.h
  create mode 100644 net/can/xl_eth.c
 
@@ -183,10 +183,10 @@ index 58f2c31c1..194b8e9a9 100644
 +canxl_eth-y		:= xl_eth.o
 diff --git a/net/can/xl_eth.c b/net/can/xl_eth.c
 new file mode 100644
-index 000000000..08236cc09
+index 000000000..9b2972138
 --- /dev/null
 +++ b/net/can/xl_eth.c
-@@ -0,0 +1,679 @@
+@@ -0,0 +1,680 @@
 +// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
 +/*
 + * xl_eth.c - Ethernet over CAN XL (CiA 611-1 SDT 04h/05h)
@@ -448,16 +448,17 @@ index 000000000..08236cc09
 +
 +	/* can_send() consumes the skb in any case */
 +	if (can_send(skb, !!(priv->cfg.flags & CANXL_ETH_FLAG_ECHO)))
-+		dev_dstats_tx_dropped(dev);
-+	else
-+		dev_dstats_tx_add(dev, len);
++		goto dropped;
 +
++	dev_dstats_tx_add(dev, len);
 +	return NETDEV_TX_OK;
 +
 +drop:
-+	dev_dstats_tx_dropped(dev);
 +	kfree_skb(skb);
-+	return NETDEV_TX_OK;
++dropped:
++	dev_dstats_tx_dropped(dev);
++	/* report the dropped frame to the sender (e.g. TCP) like VLAN */
++	return NET_XMIT_DROP;
 +}
 +
 +/* PF_CAN receive callback for the frames matching the canxl_eth filter */

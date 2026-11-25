@@ -158,10 +158,25 @@ echo:
 
 	/* can_send() consumes the skb in any case */
 	if (can_send(skb, !!(priv->cfg.flags & CANXL_ETH_FLAG_ECHO)))
-		dev_dstats_tx_dropped(dev);
-	else
-		dev_dstats_tx_add(dev, len);
+		goto dropped;
+
+	dev_dstats_tx_add(dev, len);
+	return NETDEV_TX_OK;
+
+drop:
+	kfree_skb(skb);
+dropped:
+	dev_dstats_tx_dropped(dev);
+	/* report the dropped frame to the sender (e.g. TCP) like VLAN */
+	return NET_XMIT_DROP;
 ```
+
+Whenever a frame is not sent, `NET_XMIT_DROP` is returned to the sender, like
+stacked devices (e.g. VLAN, IPVLAN) do: when `can_send()` fails (e.g. the
+transmit queue of the CAN XL interface is full) and when the frame is dropped
+before (invalid length, read-only mode of the CAN interface, no memory). TCP
+reacts on this local congestion and reduces its congestion window immediately
+(CWR), instead of waiting for duplicate ACKs or a retransmission timeout.
 
 ## skb ownership: the canxl_eth struct sock
 
@@ -302,10 +317,21 @@ the configured `sdt` for the sent frames.
 
 ## Known limitations
 
-* The sent skbs are orphaned from their original socket. Therefore e.g. TCP
-  has no transmit backpressure from the `canxl_eth` device. When the transmit
-  queue of the CAN XL interface is full the frames are dropped and TCP
-  retransmits them.
+* **Transmit backpressure:** The `canxl_eth` device hands the frames over to
+  the CAN XL interface immediately and the sent skbs are orphaned from their
+  original socket (see skb ownership). When the transmit queue of the CAN XL
+  interface is full (default `txqueuelen` 10 for CAN interfaces) the frames
+  are dropped. The drop is reported to the sender with `NET_XMIT_DROP` (see
+  transmit path). `can_send()` reports a congested but successful enqueue
+  (`NET_XMIT_CN`) as success, so only drops are reported.
+* **No flow control:** The `canxl_eth` device does not stop its transmit
+  queue while the transmit queue of the CAN XL interface is full, as there is
+  no notification when the CAN XL interface is able to send again (like for
+  other stacked devices, e.g. VLAN). To avoid drops the Ethernet bandwidth can
+  be limited with a shaping qdisc on the `canxl_eth` device (see SETUP.md,
+  "Bandwidth and backpressure"): The frames wait in the qdisc of the
+  `canxl_eth` device while they are still owned by their original socket, so
+  that e.g. TCP Small Queues (TSQ) limit the sender.
 * The IP header of received frames is not 4 byte aligned (offset 26 from the
   start of the CAN XL frame). This is supported but may cost some performance
   on some architectures.
