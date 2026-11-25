@@ -39,6 +39,7 @@ PoC for CAN CiA 611-1 Ethernet over CAN XL (SDT 0x04 / 0x05)
 * [OUT-OF-TREE.md](OUT-OF-TREE.md) : build and install the `canxl_eth` module for an existing (e.g. Debian) kernel
 * [SETUP.md](SETUP.md) : set up a CAN XL Ethernet with the `ip` tool (SDT 0x04/0x05, IPv4/IPv6, point-to-point)
 * [CONCEPT.md](CONCEPT.md) : concept of the `canxl_eth` netdevice in the Linux network layer
+* [CIA_SDT_4_5.md](CIA_SDT_4_5.md) : the idea behind the CiA 611-1 SDTs 0x04 and 0x05
 
 ### Status
 

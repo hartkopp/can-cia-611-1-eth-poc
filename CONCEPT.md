@@ -70,6 +70,8 @@ struct canxl_frame:  | prio | flags | sdt | len | af |  data[] (Ethernet frame) 
 | SEC / RRS | `CANXL_ETH_FLAG_SEC` / `CANXL_ETH_FLAG_RRS` | `CANXL_ETH_FLAG_SEC` / `CANXL_ETH_FLAG_RRS` |
 | data | Ethernet frame (without FCS) | Ethernet frame (without FCS) |
 
+The idea behind the two SDTs is described in [CIA_SDT_4_5.md](CIA_SDT_4_5.md).
+
 ```c
 /* CiA 611-1 SDT 05h: AF = DA octets 1, 4, 5, 6 (MSB first) */
 static u32 canxl_eth_af(const struct ethhdr *eth)
